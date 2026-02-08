@@ -1,0 +1,11 @@
+{
+  "operationName": "RequestToken",
+  "variables": {
+    "input": {
+      "blockchain": "SOL",
+      "destinationAddress": "B2u5WBNtKGfDMinjguuvKiF1yqREcmjHXEGaj78C2CMx",
+      "token": "USDC"
+    }
+  },
+  "query": "mutation RequestToken($input: RequestTokenInput!) { requestToken(input: $input) { amount status explorerLink } }"
+}
