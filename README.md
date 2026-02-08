@@ -1,207 +1,224 @@
-# AgentOps Preflight v1
+# AgentOps Preflight
 
-Solana transaction risk assessment API with x402 paywall.
+Solana transaction risk signals via x402 paid API.
 
-## Overview
+Bot/agent calls preflight before sending a transaction → gets risk_score + evidence → decides to send or hold.
 
-AgentOps Preflight evaluates Solana transactions before they're sent to the network, assessing risk factors like:
+**No API keys. No dashboard. USDC wallet is all you need.**
 
-- **A1 - SOL Buffer**: Post-transaction balance check
-- **A3 - Program Blacklist**: Detection of known-bad programs
-- **B1 - Priority Fee Spike**: Fee market anomaly detection
-- **B2 - RPC Degradation**: Network health monitoring
-- **C1 - Error Rate Trend**: Degradation trajectory analysis
+## What it does
+
+Your bot creates a Solana transaction. Before sending it on-chain, it calls `/tx/preflight` with the base64-encoded transaction. The API evaluates 5 risk rules and returns a score from 0 to 100 with evidence. If the score is high, your bot holds. If low, it sends.
+
+Payment happens automatically via x402 — the first request gets a 402 response with payment instructions, your client pays USDC on-chain, and the API returns the result. One HTTP call, one payment, one response.
 
 ## Endpoints
 
-| Endpoint | Method | Price | Description |
-|----------|--------|-------|-------------|
-| `/demo/sample` | GET | Free | Example response for schema reference |
-| `/solana/status` | GET | 0.01 USDC | Current network health metrics |
-| `/tx/preflight` | POST | 0.10 USDC | Full transaction risk assessment |
+| Endpoint | Price | Description |
+|---|---|---|
+| `GET /health` | Free | Server health check |
+| `GET /demo/sample` | Free | Example response (see the schema before paying) |
+| `GET /solana/status` | 0.01 USDC | Network snapshot (RPC health, error rates) |
+| `POST /tx/preflight` | 0.10 USDC | Transaction risk assessment (5 rules + evidence) |
 
-## Quick Start
+**Server:** `http://3.25.180.197:3000`
 
-### Prerequisites
+## Quick Start (5 minutes)
 
-- Node.js 18+
-- Solana wallet with USDC (for paid endpoints)
-
-### Installation
+### 1. Check the server
 
 ```bash
-npm install
+curl http://3.25.180.197:3000/health
+# {"status":"ok","timestamp":"..."}
 ```
 
-### Configuration
-
-Copy `.env.example` to `.env` and configure:
+### 2. See the response schema (free)
 
 ```bash
-cp .env.example .env
+curl http://3.25.180.197:3000/demo/sample
 ```
 
-Required settings:
-- `X402_PAYTO_SOLANA`: Your wallet address to receive payments
-- `RPC_PRIMARY_URL`: Solana RPC endpoint
+This returns an example preflight response so you can see the exact format before paying.
 
-### Running
+### 3. Install dependencies
 
 ```bash
-# Start the server (includes background worker)
-npm run dev
-
-# Or run worker separately
-npm run worker
+npm install @x402/fetch @x402/svm/exact/client @solana/web3.js bs58
 ```
 
-### Testing
+### 4. Run the example client
+
+Copy `examples/safe-send-transaction.ts` and set your wallet private key:
 
 ```bash
-npm test
+export WALLET_PRIVATE_KEY="your_base58_private_key"
+npx ts-node examples/safe-send-transaction.ts
 ```
 
-## API Usage
+This calls `/solana/status` (0.01 USDC) to check network health, then `/tx/preflight` (0.10 USDC) with a sample transaction.
 
-### Request Format
+### 5. Integrate into your bot
 
-```json
-POST /tx/preflight
-Content-Type: application/json
+The core pattern is one function:
 
-{
-  "tx_base64": "<base64-encoded-transaction>"
+```typescript
+import { wrapFetchWithPayment } from "@x402/fetch";
+import { ExactSvmSchemeClient } from "@x402/svm/exact/client";
+import { Keypair, Connection } from "@solana/web3.js";
+import bs58 from "bs58";
+
+const API_BASE = "http://3.25.180.197:3000";
+
+const keypair = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY!));
+const connection = new Connection("https://api.mainnet-beta.solana.com");
+const scheme = new ExactSvmSchemeClient(keypair, connection);
+const fetchWithPayment = wrapFetchWithPayment(fetch, scheme);
+
+async function safeSendTransaction(txBase64: string): Promise<boolean> {
+  const res = await fetchWithPayment(`${API_BASE}/tx/preflight`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tx_base64: txBase64 }),
+  });
+
+  const data = await res.json();
+
+  if (data.risk_score >= 70) {
+    console.log(`HOLD: risk_score=${data.risk_score}`, data.flags);
+    return false;
+  }
+
+  console.log(`SEND: risk_score=${data.risk_score}`);
+  return true;
 }
 ```
 
-### Response Format
+## Risk Rules
+
+The API evaluates 5 rules on every preflight call:
+
+| Rule | Code | Description |
+|---|---|---|
+| A1 | `SOL_BUFFER_LOW` | Does the sender have enough SOL after this tx? |
+| A3 | `BLACKLISTED_PROGRAM` | Does the tx interact with known-bad programs? |
+| B1 | `PRIORITY_FEE_SPIKE` | Are priority fees abnormally high right now? |
+| B2 | `RPC_DEGRADATION` | Is the RPC error rate above threshold? |
+| C1 | `ERROR_RATE_TREND` | Is the error rate trending upward? |
+
+Each rule returns one of three statuses:
+
+- **TRIGGERED** — risk detected, points added to risk_score
+- **OK** — checked and safe
+- **SKIPPED** — not enough data to evaluate
+
+## Response Format
 
 ```json
 {
-  "request_id": "uuid",
-  "computed_at": "ISO8601",
+  "request_id": "801f04d2-8f4e-4fd4-88e7-fddd4db82e6b",
+  "computed_at": "2026-02-07T15:58:22.121Z",
   "rule_set_version": "rev-final-1.0.0",
   "risk_score": 30,
   "partial": false,
   "flags": [
     {
+      "rule": "A1",
+      "code": "SOL_BUFFER_LOW",
+      "status": "TRIGGERED",
+      "points": 15,
+      "detail": "post_balance=0.002, threshold=0.01"
+    },
+    {
       "rule": "B2",
       "code": "RPC_DEGRADATION",
-      "points": 30,
-      "triggered": true,
-      "observed": 0.08,
-      "threshold": 0.03,
-      "source": "net_health_snapshots",
-      "message": "RPC error rate exceeds threshold"
+      "status": "OK",
+      "points": 0,
+      "detail": "observed=0.001, threshold=0.03"
     }
   ],
-  "evidence": [...]
+  "evidence": {
+    "rpc_ok_rate_1m": 0.99,
+    "rpc_error_rate_1m": 0.01,
+    "rpc_p95_ms_1m": 207,
+    "snapshot_age_sec": 12,
+    "trend_ratio": 0.5
+  }
 }
 ```
 
-### Risk Score Interpretation
+When `partial` is true, it means the transaction simulation failed but the API still evaluated all available rules.
 
-| Score | Risk Level |
-|-------|------------|
-| 0-25  | Low |
-| 26-50 | Moderate |
-| 51-75 | High |
-| 76-100 | Critical |
+## How x402 Payment Works
 
-## Client Integration
+x402 is an open protocol that uses HTTP 402 ("Payment Required") for machine-to-machine payments.
 
-See the `examples/` directory for a complete client implementation using `@x402/fetch`.
+1. Your client calls a paid endpoint
+2. Server responds with `402 Payment Required` + payment instructions
+3. Your client signs a USDC transfer on Solana
+4. Client retries the request with the payment proof in a header
+5. Server verifies the payment on-chain and returns the result
+
+The `@x402/fetch` wrapper handles steps 2-4 automatically. From your code's perspective, it's just a normal HTTP call that costs USDC.
+
+## Bot Integration Patterns
+
+### Simple guard (recommended)
 
 ```typescript
-import { wrapFetch } from '@x402/fetch';
-import { createSvmPaymentSigner } from '@x402/svm';
-
-const paymentSigner = createSvmPaymentSigner({ keypair, connection, network });
-const x402Fetch = wrapFetch(fetch, paymentSigner);
-
-const response = await x402Fetch('http://localhost:3000/tx/preflight', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ tx_base64 }),
-});
+const shouldSend = await safeSendTransaction(myTxBase64);
+if (shouldSend) {
+  await connection.sendRawTransaction(myTxBuffer);
+}
 ```
 
-## Architecture
+### Threshold-based strategy
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    API Server                            │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
-│  │  /demo   │  │ /status  │  │    /tx/preflight     │  │
-│  │  (free)  │  │  (0.01)  │  │       (0.10)         │  │
-│  └──────────┘  └────┬─────┘  └──────────┬───────────┘  │
-│                     │                    │              │
-│                     │    x402 Paywall    │              │
-│                     └────────┬───────────┘              │
-│                              │                          │
-│  ┌───────────────────────────▼──────────────────────┐  │
-│  │              Rule Engine (5 rules)                │  │
-│  │  A1: SOL Buffer    A3: Blacklist   B1: Fee Spike │  │
-│  │  B2: RPC Degrade   C1: Trend                     │  │
-│  └───────────────────────────┬──────────────────────┘  │
-│                              │                          │
-│  ┌───────────────────────────▼──────────────────────┐  │
-│  │                    SQLite DB                      │  │
-│  │  net_health_snapshots  │  preflight_logs         │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+```typescript
+const data = await callPreflight(txBase64);
 
-┌─────────────────────────────────────────────────────────┐
-│                  Background Worker                       │
-│  - Runs every 60s                                       │
-│  - Pings RPC endpoints                                  │
-│  - Calculates health metrics                            │
-│  - Writes snapshots to DB                               │
-└─────────────────────────────────────────────────────────┘
+if (data.risk_score >= 70) {
+  log("Skipping tx: high risk");
+} else if (data.risk_score >= 40) {
+  await sleep(30_000);
+} else {
+  await sendTransaction(tx);
+}
 ```
 
-## x402 Fallback Options
+### Network health check (cheaper)
 
-If `@x402/express` packages are unavailable, consider:
-
-1. **x402-solana npm package**: Alternative x402 implementation
-2. **Native implementation**: Direct Solana payment verification
-3. **Contact x402 maintainers**: For support issues
-
-## Environment Variables
-
-See `.env.example` for all configuration options.
-
-## Project Structure
-
-```
-agentops-preflight/
-├── src/
-│   ├── server.ts          # Express app + x402 setup
-│   ├── config.ts          # Environment validation (zod)
-│   ├── db/                # SQLite schema + queries
-│   ├── routes/            # API endpoints
-│   ├── rules/             # Risk evaluation rules
-│   ├── worker/            # Background health monitor
-│   └── utils/             # Helpers (tx-parser, simulate, errors)
-├── examples/              # Client integration examples
-├── tests/                 # Unit + integration tests
-└── CLAUDE.md             # Full specification
+```typescript
+const status = await callStatus();
+if (status.rpc_ok_rate_1m < 0.95) {
+  log("Network degraded, pausing all sends");
+  return;
+}
+const preflight = await callPreflight(txBase64);
 ```
 
-## Disclaimer
+## Pricing
 
-**THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.**
+| Endpoint | Price | Use case |
+|---|---|---|
+| `/solana/status` | 0.01 USDC | Network health monitoring |
+| `/tx/preflight` | 0.10 USDC | Per-transaction risk check |
 
-AgentOps Preflight provides risk assessment based on observable network conditions and transaction analysis. It does not guarantee transaction success or prevent all failures.
+Your bot's wallet needs mainnet USDC (SPL token) and a small amount of SOL for transaction fees.
 
-- Preflight checks are advisory, not deterministic
-- Network conditions can change between check and execution
-- The service operators assume no liability for transaction outcomes
-- Always conduct independent due diligence
-- This is not financial advice
+- **USDC contract:** `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+- **Network:** Solana mainnet (`solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`)
 
-Use at your own risk.
+## Important Notes
+
+- This API provides **informational risk signals only**. It does not make trading recommendations.
+- Each x402 request is a separate payment. Retrying charges again. Cache results client-side if needed.
+- If simulation fails, the API returns `partial: true` with whatever rules it could evaluate.
+
+## Requirements
+
+- Node.js 18+
+- A Solana wallet with mainnet USDC
+- TypeScript (recommended) or JavaScript
 
 ## License
 
