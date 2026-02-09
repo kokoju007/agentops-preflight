@@ -5,7 +5,9 @@ export type ErrorCode =
   | 'invalid_tx'
   | 'rate_limited'
   | 'rpc_unavailable'
-  | 'internal_error';
+  | 'internal_error'
+  | 'forbidden'
+  | 'unauthorized';
 
 export interface ApiError {
   error: {

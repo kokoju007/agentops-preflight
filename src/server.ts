@@ -1,6 +1,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import * as fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 import { Connection, PublicKey as SolPublicKey } from '@solana/web3.js';
 import { config } from './config';
 import { getDb, closeDb } from './db/init';
@@ -11,6 +12,7 @@ import { startWorker, stopWorker } from './worker/worker';
 import demoRoutes from './routes/demo';
 import statusRoutes from './routes/status';
 import preflightRoutes from './routes/preflight';
+import internalPreflightRoutes from './routes/internal-preflight';
 
 // x402 imports - use require due to subpath export issues with ts-node
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
@@ -83,6 +85,9 @@ if (config.BASE_URL) {
 
 // Free demo endpoint (no x402)
 app.use('/demo', demoRoutes);
+
+// Internal preflight endpoint (loopback-only, no x402)
+app.use('/internal/tx/preflight', internalPreflightRoutes);
 
 // Setup x402 payment middleware
 async function setupX402Routes() {
@@ -284,9 +289,26 @@ async function checkFeePayerBalance() {
   }
 }
 
+// Generate INTERNAL_SECRET if not provided
+function initInternalSecret(): string {
+  const envSecret = process.env.INTERNAL_SECRET;
+  if (envSecret) {
+    console.log('[server] INTERNAL_SECRET loaded from environment');
+    return envSecret;
+  }
+  const generated = uuidv4();
+  console.log(`[server] INTERNAL_SECRET generated: ${generated}`);
+  console.log('[server] Copy this value to acp-seller/.env as INTERNAL_SECRET');
+  return generated;
+}
+
 // Start server
 async function start() {
   try {
+    // Generate or load INTERNAL_SECRET and expose via process.env for internal route
+    const internalSecret = initInternalSecret();
+    process.env.__INTERNAL_SECRET = internalSecret;
+
     // Initialize database
     await getDb();
     console.log('[server] Database initialized');
@@ -305,10 +327,11 @@ async function start() {
     app.listen(port, () => {
       console.log(`[server] AgentOps Preflight v1 listening on port ${port}`);
       console.log(`[server] Endpoints:`);
-      console.log(`  - GET  /health          (health check)`);
-      console.log(`  - GET  /demo/sample     (free)`);
-      console.log(`  - GET  /solana/status   (${config.PRICE_STATUS_USDC} USDC)`);
-      console.log(`  - POST /tx/preflight    (${config.PRICE_PREFLIGHT_USDC} USDC)`);
+      console.log(`  - GET  /health                  (health check)`);
+      console.log(`  - GET  /demo/sample             (free)`);
+      console.log(`  - GET  /solana/status            (${config.PRICE_STATUS_USDC} USDC)`);
+      console.log(`  - POST /tx/preflight             (${config.PRICE_PREFLIGHT_USDC} USDC)`);
+      console.log(`  - POST /internal/tx/preflight    (internal, loopback only)`);
     });
   } catch (err) {
     console.error('[server] Failed to start:', err);

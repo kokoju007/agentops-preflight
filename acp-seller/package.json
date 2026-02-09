@@ -1,0 +1,19 @@
+{
+  "name": "acp-seller",
+  "version": "1.0.0",
+  "description": "ACP Seller Runner for AgentOps Preflight — agent-to-agent commerce via Virtuals Protocol",
+  "private": true,
+  "scripts": {
+    "seller": "ts-node src/seller.ts",
+    "buyer-test": "ts-node src/buyer-test.ts"
+  },
+  "dependencies": {
+    "@virtuals-protocol/acp-node": "0.3.0-beta.22",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
